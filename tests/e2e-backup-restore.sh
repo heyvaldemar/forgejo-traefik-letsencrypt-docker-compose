@@ -127,20 +127,22 @@ test_backup_carries_the_data_directory() {
   echo "  the archive carries the data directory"
 }
 
-test_backup_carries_the_repositories_and_the_database() {
+test_backup_carries_the_database() {
   # A tarball of /data that happens to contain a directory proves very little.
-  # These two entries are the instance: the bare repositories, and the SQLite
-  # file that knows who owns them, what the issues say and which tokens work.
-  # An archive missing either one restores into a Forgejo that starts cleanly
-  # and has lost everything.
-  local f listing
-  f=$(list_backups | tail -1)
-  listing=$(bk "tar -tzf '$f'")
-  grep -q '^data/git/repositories' <<<"$listing" \
-    || { echo "  $f does not carry data/git/repositories" >&2; return 1; }
-  grep -q '^data/gitea/forgejo.db' <<<"$listing" \
+  # forgejo.db is the instance: who the users are, what the issues say, which
+  # tokens work, and which repository belongs to whom. An archive missing it
+  # restores into a Forgejo that starts perfectly and has lost everything.
+  #
+  # Deliberately not asserted here: that the archive carries a repository.
+  # /data/git/repositories comes into existence when the first repository is
+  # created, so on an instance that has none - a fresh CI stack, a staging copy
+  # - demanding it would fail an archive that is entirely correct. The workflow
+  # asserts it where a repository has demonstrably just been pushed, against an
+  # archive taken after that.
+  local f; f=$(list_backups | tail -1)
+  bk "tar -tzf '$f' | grep -q '^data/gitea/forgejo.db'" \
     || { echo "  $f does not carry the SQLite database" >&2; return 1; }
-  echo "  the archive carries the repository store and the database"
+  echo "  the archive carries the database itself"
 }
 
 test_failure_is_detected() {
@@ -219,7 +221,7 @@ run_test test_env_required
 run_test test_backup_created
 run_test test_backup_readable
 run_test test_backup_carries_the_data_directory
-run_test test_backup_carries_the_repositories_and_the_database
+run_test test_backup_carries_the_database
 run_test test_failure_is_detected
 run_test test_restore_roundtrip
 run_test test_prune_removes_old

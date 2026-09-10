@@ -152,7 +152,9 @@ That last pair is the point. Forgejo starts perfectly well on an empty database;
 
 ### Backup and restore, proven
 
-`tests/e2e-backup-restore.sh` runs against the live stack and is what CI executes after the smoke test. Three scenarios carry the weight. The archive must contain `data/git/repositories` and the SQLite database by name, not merely a directory. The restore roundtrip writes a file, waits for the archive that contains it, deletes it, restores, and asserts it came back. The failure test blocks the destination the loop is about to write to and asserts the loop says FAILED and leaves nothing behind that is named like a backup and does not open.
+`tests/e2e-backup-restore.sh` runs against the live stack and is what CI executes after the smoke test. Three scenarios carry the weight. The archive must contain `data/gitea/forgejo.db` by name — the file that knows who the users are, what the issues say and which repository belongs to whom — rather than merely a directory. The restore roundtrip writes a file, waits for the archive that contains it, deletes it, restores, and asserts it came back. The failure test blocks the destination the loop is about to write to and asserts the loop says FAILED and leaves nothing behind that is named like a backup and does not open.
+
+The repository store is asserted in CI rather than here, and against an archive taken *after* the test push: `/data/git/repositories` comes into existence with the first repository, so demanding it from a staging copy that has none would fail an archive that is entirely correct.
 
 ```bash
 chmod +x tests/e2e-backup-restore.sh

@@ -437,6 +437,40 @@ jobs:
             && echo "Data backup valid and carries the data directory: $data"
           docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep -i "backup FAILED" && { echo "::error::the backups log reports a failure"; exit 1; } || true
 
+      - name: The repository that was just pushed reaches an archive
+        # The archive on disk right now may predate the push by seconds - the
+        # loop runs on its own clock - so this waits for the NEXT one and reads
+        # that. Asking the newest existing file would be a race, and it was:
+        # the first run of this job checked an archive taken two seconds before
+        # receive-pack finished and reported a missing repository that had
+        # simply not been created yet.
+        env:
+          FORGEJO_TEST_USER: citest
+        run: |
+          set -euo pipefail
+          dc() { docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" "$@"; }
+          backups_path="/srv/forgejo-data/backups"
+          dc exec -T backups sh -c "touch $backups_path/.ci-stamp"
+          echo "waiting for an archive taken after the push..."
+          f=""
+          for _ in $(seq 1 40); do
+            f=$(dc exec -T backups sh -c \
+              "find $backups_path -name 'forgejo-data-backup-*.tar.gz' -newer $backups_path/.ci-stamp 2>/dev/null | sort | head -1" \
+              | tr -d '\r')
+            # A file that exists is not yet a backup: the loop may still be
+            # writing it. The "backup OK" line is what says it has been read
+            # back and renamed.
+            if [ -n "$f" ] && dc logs backups 2>/dev/null | grep -qF "backup OK: $f"; then break; fi
+            f=""
+            sleep 10
+          done
+          [ -n "$f" ] || { echo "::error::no archive was produced within the wait"; exit 1; }
+          echo "archive taken after the push: $f"
+          dc exec -T backups sh -c "tar -tzf '$f' | grep -q '^data/git/repositories/$FORGEJO_TEST_USER/ci-smoke.git'" \
+            || { echo "::error::$f does not carry the repository that was pushed before it"; exit 1; }
+          echo "the archive carries data/git/repositories/$FORGEJO_TEST_USER/ci-smoke.git"
+          dc exec -T backups sh -c "rm -f $backups_path/.ci-stamp"
+
       - name: Run the backup/restore end-to-end tests
         # Eight scenarios against the live stack: required-env guard, backup
         # produced, readable, valid content, library archive readable, failure

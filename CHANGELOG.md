@@ -91,6 +91,14 @@ fleet standard established in
   Forgejo starts perfectly well on an empty database — that is what a fresh
   install is — so a check that only asks whether it answers would pass a
   restore that lost everything.
+- **An archive taken a moment before a push cannot contain what the push
+  delivered.** The first CI run failed on exactly that: the newest archive on
+  disk predated `receive-pack` by two seconds, and a test that asked the newest
+  archive for the repository reported it missing. The workflow now stamps the
+  backup directory after the push and waits for the next archive, and
+  `/data/git/repositories` is asserted only there — the generic suite runs on
+  instances that legitimately have no repositories yet, where that directory
+  does not exist.
 - **The commit is not in the database the instant `git push` returns.** The
   branch is written a moment later, and asking immediately gets a null back
   from a push that entirely succeeded. CI waits rather than calling that a
