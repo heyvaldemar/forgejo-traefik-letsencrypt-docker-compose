@@ -137,15 +137,16 @@ services:
       - "traefik.http.routers.forgejo.tls.certresolver=letsencrypt"
       # Pass the original Host header to the container
       - "traefik.http.services.forgejo.loadbalancer.passhostheader=true"
-      # A git push sends the whole pack as one request body and a clone comes
-      # back as one long response. Traefik buffers both by default, which puts
-      # a ceiling on repository size that nobody discovers until the first big
-      # push fails halfway. Zero disables buffering in both directions.
-      - "traefik.http.middlewares.forgejo-buffer.buffering.maxRequestBodyBytes=0"
-      - "traefik.http.middlewares.forgejo-buffer.buffering.memRequestBodyBytes=0"
-      - "traefik.http.middlewares.forgejo-buffer.buffering.maxResponseBodyBytes=0"
-      - "traefik.http.middlewares.forgejo-buffer.buffering.memResponseBodyBytes=0"
-      - "traefik.http.routers.forgejo.middlewares=forgejo-buffer"
+      # THERE IS DELIBERATELY NO BUFFERING MIDDLEWARE HERE. A git push sends
+      # the whole pack as one request body and a clone comes back as one long
+      # response, and Traefik streams both unless you attach a Buffering
+      # middleware - attaching it is what turns buffering ON, and setting its
+      # limits to 0 means "no size ceiling", not "off". Measured against a
+      # response that takes four seconds to produce: without the middleware the
+      # first byte arrives in 0.03s, with an all-zero one it arrives at 4.15s,
+      # the whole thing having been held in the proxy first. What limits a long
+      # push is the entry point's readTimeout, which is 60s by default and is
+      # set to zero below.
       # Specify which Docker network Traefik should use for routing
       - "traefik.docker.network=traefik-network"
     restart: unless-stopped

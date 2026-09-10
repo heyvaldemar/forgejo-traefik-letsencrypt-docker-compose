@@ -53,7 +53,7 @@ curl -s "https://${FORGEJO_HOSTNAME}/api/healthz"
 
 - **`mkdir /data/…: permission denied`, over and over, and the container never turns healthy.** Something is pointing a Forgejo path outside `/data/git` and `/data/gitea`. Those two are the only directories the image creates and hands to the uid it then runs as; `/data` itself stays root-owned. See the note below.
 - **Clone URLs point at the wrong host.** `FORGEJO_HOSTNAME` is written into `ROOT_URL`, which is what every clone button and every notification link is built from. Changing it later invalidates URLs people already have.
-- **A large push fails part way.** Traefik buffers request and response bodies by default, and a git push is one request body. This template turns that off; if you have put another proxy or a tunnel in front, it has its own limit.
+- **A large push fails part way.** Traefik streams bodies and imposes no size limit, but its entry point gives you 60 seconds to send the whole request by default, and a big first push over a slow link exceeds that. This template sets that timeout to zero; if you have put another proxy or a tunnel in front, it has its own.
 - **Cert issuance fails.** DNS has not propagated, or port 80 is not reachable from the internet.
 - **Networks not found.** Step 2 was skipped.
 

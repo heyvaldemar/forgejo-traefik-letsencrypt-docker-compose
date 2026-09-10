@@ -349,10 +349,10 @@ jobs:
         # push` over HTTPS through Traefik lands a commit the API can then read
         # back at the right branch.
         #
-        # It is also the buffering assertion. Traefik buffers request and
-        # response bodies by default, and a git push is one request body; the
-        # compose file turns that off, and if it is ever turned back on this
-        # step is what notices.
+        # It is also what would notice a proxy that started holding the pack
+        # instead of streaming it: a Buffering middleware added to this router,
+        # or a timeout put back on the entry point, shows up here as a push
+        # that stalls or fails rather than as a config diff nobody reads.
         env:
           FORGEJO_TEST_USER: citest
           FORGEJO_TEST_PASSWORD: ci-test-password-not-a-secret
@@ -388,8 +388,8 @@ jobs:
           git -C "$work" init -q -b main
           git -C "$work" config user.email "ci@example.com"
           git -C "$work" config user.name "CI"
-          # A file large enough that a buffering limit would have to hold it,
-          # rather than a one-line commit that any configuration passes.
+          # A pack big enough to be a real request body, rather than a
+          # one-line commit that any configuration passes.
           head -c 5000000 /dev/urandom > "$work/payload.bin"
           echo "pushed by deployment verification" > "$work/README.md"
           git -C "$work" add -A

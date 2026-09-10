@@ -27,12 +27,16 @@ fleet standard established in
   `INSTALL_LOCK` is set, the admin is created from the CLI, and CI asserts that
   `/install` stays closed. Registration is disabled and nothing is visible
   without signing in, so this starts private and opens by decision.
-- **A `git push` that is not cut off by the proxy.** Traefik buffers request
-  and response bodies by default, which puts a ceiling on repository size that
-  nobody discovers until the first large push fails halfway. Both directions
-  are unbuffered for this router, and the responding timeouts are lifted:
-  packing a large repository server-side can take minutes before the first byte
-  comes back, and the default write timeout ends that as a broken pipe.
+- **A `git push` that is not cut off by the proxy.** Traefik gives an entry
+  point 60 seconds to read an entire request body by default, and a first push
+  of a large repository over a domestic uplink goes past that; packing one
+  server-side can likewise take minutes before the first byte of the response.
+  Both timeouts are lifted here, and the idle timeout is raised to ten minutes.
+  Deliberately absent: a Buffering middleware. Traefik streams bodies unless
+  you attach one, so attaching it with zero limits would turn buffering on with
+  no size ceiling — the opposite of the intent. Measured on this stack against
+  a response that takes four seconds to produce: 0.03s to the first byte
+  without it, 4.15s with it.
 - **A `git push` proven in CI, not asserted.** The deploy job creates an admin
   from the CLI, creates a repository through the API, pushes a commit carrying
   a 5 MB blob over HTTPS through Traefik, requires the API to report that exact
@@ -91,6 +95,15 @@ fleet standard established in
   branch is written a moment later, and asking immediately gets a null back
   from a push that entirely succeeded. CI waits rather than calling that a
   failure.
+- **There is no Buffering middleware, and that is the point.** The first draft
+  of this file carried one with every limit set to `0`, on the belief that
+  Traefik buffers by default and that zero turns it off. Both halves are wrong:
+  Traefik streams bodies unless a Buffering middleware is attached, attaching
+  one is what turns buffering on, and `0` on its limits means *no size
+  ceiling*. Measured against a response that takes four seconds to produce,
+  0.03s to the first byte without it and 4.15s with it. It never reached a
+  release here; it did reach one in the Jellyfin template the same day, fixed
+  there in v1.0.1.
 
 [Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/releases/tag/v1.0.0
