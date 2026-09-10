@@ -1,0 +1,316 @@
+# Image pins live HERE, as interpolation defaults, so `git pull` (or
+# re-downloading this file) delivers the exact version combination this
+# repository has tested — no .env editing required. Setting the matching
+# variable in .env overrides the default for anyone who wants to pin
+# differently; .env itself carries only secrets and deliberate overrides.
+# CI (Trivy scans, check-pin-freshness, the ephemeral test .env) reads
+# the pins from these lines — this block is the single source of truth.
+x-images:
+  traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:f86a2cab1b5c649070c49f883c743dd32d8485a56e3368c5f93b9e91f1e91259}}
+  forgejo: &forgejo-image ${FORGEJO_IMAGE_TAG:-codeberg.org/forgejo/forgejo:${FORGEJO_IMAGE_VERSION:-16.0.4@sha256:a3e33d03e771d3e58b27de5573c3a25dc4f670583a6724c1878a6d0bbecf3556}}
+  backups: &backups-image ${FORGEJO_BACKUPS_IMAGE_TAG:-alpine:${FORGEJO_BACKUPS_IMAGE_VERSION:-3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce}}
+
+networks:
+  forgejo-network:
+    external: true
+  traefik-network:
+    external: true
+
+volumes:
+  forgejo-data:
+  forgejo-data-backups:
+  traefik-certificates:
+
+services:
+  forgejo:
+    image: *forgejo-image
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # SQLite tolerates a hard kill far worse than it looks. A SIGKILL during a
+    # write leaves a write-ahead log to replay, and a push interrupted
+    # mid-transaction can leave a repository that the database references and
+    # the disk does not have. Docker's default is ten seconds. Sixty here,
+    # overridable in .env.
+    stop_grace_period: ${FORGEJO_STOP_GRACE_PERIOD:-60s}
+    # Resource limits as .env-overridable defaults (e.g. FORGEJO_MEMORY_LIMIT=4g);
+    # the override survives every git pull. The number that moves these is not
+    # the number of users — it is `git gc` on a large repository and the
+    # indexer, both of which are bursty.
+    deploy:
+      resources:
+        limits:
+          memory: ${FORGEJO_MEMORY_LIMIT:-2g}
+          cpus: "${FORGEJO_CPU_LIMIT:-2.0}"
+        reservations:
+          memory: ${FORGEJO_MEMORY_RESERVATION:-256m}
+          cpus: "${FORGEJO_CPU_RESERVATION:-0.2}"
+    volumes:
+      # Everything: the git repositories, the SQLite database, app.ini,
+      # avatars, attachments and the LFS store. One directory, one archive.
+      - forgejo-data:/data
+    environment:
+      # The image runs as uid/gid 1000 inside. Change both only if you bind-mount
+      # a host directory that is owned by different numbers.
+      USER_UID: ${FORGEJO_UID:-1000}
+      USER_GID: ${FORGEJO_GID:-1000}
+      TZ: ${FORGEJO_TZ:-Etc/UTC}
+      # Any app.ini setting can be driven from the environment in the
+      # FORGEJO__section__KEY form. Keeping them here rather than editing
+      # app.ini by hand keeps this file the single source of truth — which is
+      # what makes `git pull && docker compose up -d` a complete update.
+      FORGEJO__database__DB_TYPE: sqlite3
+      # The database file must live under /data/gitea, and that is not a
+      # cosmetic detail. The image starts as root, creates /data/git and
+      # /data/gitea, chowns those two to the uid above, and then drops to it.
+      # /data itself stays root-owned, so a database path anywhere else under
+      # /data cannot be created by the process that needs it: the container
+      # comes up, retries ten times with "mkdir /data/...: permission denied",
+      # and the health check never turns green.
+      #
+      # It works on a bind mount whose whole tree you chowned yourself, which
+      # is exactly why it is worth pinning down here — a setting that is fine
+      # on the maintainer's host and broken on a named volume is the kind that
+      # ships. /data/gitea is also where Forgejo puts it by default; the name
+      # is a leftover from the fork and does not mean the Gitea code path.
+      FORGEJO__database__PATH: /data/gitea/forgejo.db
+      FORGEJO__server__DOMAIN: ${FORGEJO_HOSTNAME:?set in .env - see .env.example}
+      # ROOT_URL is what ends up in every clone button and in every link in
+      # notification mail. Wrong here and clones silently point somewhere
+      # unreachable.
+      FORGEJO__server__ROOT_URL: https://${FORGEJO_HOSTNAME:?set in .env - see .env.example}/
+      FORGEJO__server__HTTP_PORT: 3000
+      # The built-in SSH server is off. Turning it on means publishing a second
+      # SSH surface on the host; git over HTTPS through Traefik uses the
+      # certificate that is already here and needs no extra port. If you want
+      # it, `git-over-ssh.override.yml` turns it on properly — see the README.
+      FORGEJO__server__DISABLE_SSH: "true"
+      # Skips the web installer. Without this, the first person to reach the
+      # page configures the instance — and between `up -d` and your first
+      # visit, that is whoever finds the hostname. The admin account is created
+      # from the CLI instead; the README has the one command.
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: ${FORGEJO_DISABLE_REGISTRATION:-true}
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: ${FORGEJO_REQUIRE_SIGNIN_VIEW:-true}
+      FORGEJO__openid__ENABLE_OPENID_SIGNIN: "false"
+      FORGEJO__openid__ENABLE_OPENID_SIGNUP: "false"
+      # Actions is the CI half. Enabled so the feature exists; nothing executes
+      # until a runner is registered, and adding one later needs no change
+      # here. Note the runner model: it polls outward and waits for work, so it
+      # needs no inbound connection and no public address of its own.
+      FORGEJO__actions__ENABLED: ${FORGEJO_ACTIONS_ENABLED:-true}
+      FORGEJO__log__LEVEL: ${FORGEJO_LOG_LEVEL:-info}
+    networks:
+      - forgejo-network
+      - traefik-network
+    healthcheck:
+      # /api/healthz is the one endpoint that answers before a user exists and
+      # keeps answering with REQUIRE_SIGNIN_VIEW on. It reports the database
+      # and cache separately, so a green probe here means the SQLite file was
+      # actually opened, not merely that a port is listening.
+      #
+      # The FIRST "status" in that document is the overall verdict; the ones
+      # after it belong to the individual components. Matching "pass" anywhere
+      # would therefore go green on a body whose top line reads "fail" and
+      # whose cache happens to be fine — so the first line is isolated before
+      # anything is matched. The response is pretty-printed, which is also why
+      # this is not a fixed string comparison.
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/healthz | grep -m1 '\"status\"' | grep -q '\"pass\"' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 90s
+    labels:
+      # Enable Traefik for this container
+      - "traefik.enable=true"
+      # Match incoming requests on a specific hostname
+      - "traefik.http.routers.forgejo.rule=Host(`${FORGEJO_HOSTNAME:?set in .env - see .env.example}`)"
+      # Assign the router to a named Traefik service
+      - "traefik.http.routers.forgejo.service=forgejo"
+      # Use the 'websecure' (HTTPS) entry point
+      - "traefik.http.routers.forgejo.entrypoints=websecure"
+      # Define the internal container port for routing
+      - "traefik.http.services.forgejo.loadbalancer.server.port=3000"
+      # Enable TLS on this router
+      - "traefik.http.routers.forgejo.tls=true"
+      # Use Let's Encrypt for certificate management
+      - "traefik.http.routers.forgejo.tls.certresolver=letsencrypt"
+      # Pass the original Host header to the container
+      - "traefik.http.services.forgejo.loadbalancer.passhostheader=true"
+      # A git push sends the whole pack as one request body and a clone comes
+      # back as one long response. Traefik buffers both by default, which puts
+      # a ceiling on repository size that nobody discovers until the first big
+      # push fails halfway. Zero disables buffering in both directions.
+      - "traefik.http.middlewares.forgejo-buffer.buffering.maxRequestBodyBytes=0"
+      - "traefik.http.middlewares.forgejo-buffer.buffering.memRequestBodyBytes=0"
+      - "traefik.http.middlewares.forgejo-buffer.buffering.maxResponseBodyBytes=0"
+      - "traefik.http.middlewares.forgejo-buffer.buffering.memResponseBodyBytes=0"
+      - "traefik.http.routers.forgejo.middlewares=forgejo-buffer"
+      # Specify which Docker network Traefik should use for routing
+      - "traefik.docker.network=traefik-network"
+    restart: unless-stopped
+    depends_on:
+      traefik:
+        condition: service_healthy
+
+  traefik:
+    image: *traefik-image
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # Drop every Linux capability; add back only what this image's
+    # entrypoint needs (bind :80/:443).
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    # Resource limits as .env-overridable defaults (e.g. TRAEFIK_MEMORY_LIMIT=2g);
+    # the override survives every git pull.
+    deploy:
+      resources:
+        limits:
+          memory: ${TRAEFIK_MEMORY_LIMIT:-256m}
+          cpus: "${TRAEFIK_CPU_LIMIT:-0.5}"
+        reservations:
+          memory: ${TRAEFIK_MEMORY_RESERVATION:-64m}
+          cpus: "${TRAEFIK_CPU_RESERVATION:-0.1}"
+    command:
+      # Set the log level (DEBUG, INFO, WARN, ERROR)
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-WARN}"
+      # Enable the built-in API and web-based dashboard
+      - "--api.dashboard=true"
+      # Enable the /ping endpoint so we can health-check Traefik
+      - "--ping=true"
+      # Assign the /ping endpoint to a dedicated entry point on port 8082
+      - "--ping.entrypoint=ping"
+      - "--entrypoints.ping.address=:8082"
+      # Define the primary HTTP entry point on port 80
+      - "--entrypoints.web.address=:80"
+      # Define the secure (HTTPS) entry point on port 443
+      - "--entrypoints.websecure.address=:443"
+      # HTTP -> HTTPS redirect at entrypoint level
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # Packing a large repository server-side can take minutes before the
+      # first byte of the response, and the default write timeout ends the
+      # clone as a broken pipe. Zero removes the ceiling; raise the idle
+      # timeout instead if you want one.
+      - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=${FORGEJO_GIT_TIMEOUT:-0s}"
+      - "--entrypoints.websecure.transport.respondingTimeouts.writeTimeout=${FORGEJO_GIT_TIMEOUT:-0s}"
+      - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout=${FORGEJO_IDLE_TIMEOUT:-600s}"
+      # Enable the Docker provider to detect containers and their labels
+      - "--providers.docker=true"
+      # Point Traefik to the Docker socket
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      # Prevent automatic exposure of all containers; only expose containers
+      # with "traefik.enable=true"
+      - "--providers.docker.exposedbydefault=false"
+      # Use ACME (Let's Encrypt) to generate/renew certificates via TLS challenge
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      # The email address used by Let's Encrypt for renewal notices
+      - "--certificatesresolvers.letsencrypt.acme.email=${TRAEFIK_ACME_EMAIL:?set in .env - see .env.example}"
+      # The file where ACME certificates are stored inside the container
+      - "--certificatesresolvers.letsencrypt.acme.storage=/etc/traefik/acme/acme.json"
+      # Enable Prometheus metrics
+      - "--metrics.prometheus=true"
+      # Configure Prometheus histogram buckets
+      - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
+      # Check for newer Traefik versions and optionally log that info
+      - "--global.checknewversion=true"
+      # Disable sending anonymous usage data to the Traefik maintainers
+      - "--global.sendanonymoususage=false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certificates:/etc/traefik/acme
+    networks:
+      - traefik-network
+    ports:
+      - "80:80"
+      - "443:443"
+    healthcheck:
+      test: ["CMD", "wget", "http://localhost:8082/ping","--spider"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      # Enable Traefik for this container
+      - "traefik.enable=true"
+      # A router to expose the Traefik dashboard
+      - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_HOSTNAME:?set in .env - see .env.example}`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls=true"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      # Basic Authentication for the Traefik dashboard
+      - "traefik.http.routers.dashboard.middlewares=authtraefik"
+      - "traefik.http.middlewares.authtraefik.basicauth.users=${TRAEFIK_BASIC_AUTH:?set in .env - see .env.example for htpasswd generation}"
+      # Specify the internal server port to the dashboard service
+      - "traefik.http.services.dashboard.loadbalancer.server.port=8080"
+      # Pass the original Host header to the backend
+      - "traefik.http.services.dashboard.loadbalancer.passhostheader=true"
+    restart: unless-stopped
+
+  backups:
+    # A plain alpine: /data is what is worth keeping, so the loop needs tar
+    # and nothing else.
+    image: *backups-image
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # Drop every Linux capability; add back only what this container needs to
+    # write archives it owns and to read files owned by uid 1000.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    # Resource limits as .env-overridable defaults; the override survives every
+    # git pull.
+    deploy:
+      resources:
+        limits:
+          memory: ${FORGEJO_BACKUPS_MEMORY_LIMIT:-256m}
+          cpus: "${FORGEJO_BACKUPS_CPU_LIMIT:-0.5}"
+        reservations:
+          memory: ${FORGEJO_BACKUPS_MEMORY_RESERVATION:-16m}
+          cpus: "${FORGEJO_BACKUPS_CPU_RESERVATION:-0.1}"
+    command: >-
+      sh -c 'sleep "$$BACKUP_INIT_SLEEP";
+      while true; do
+        STAMP="$$(date +%Y-%m-%d_%H-%M)";
+        DATA_FILE="$$DATA_BACKUPS_PATH/$$DATA_BACKUP_NAME-$$STAMP.tar.gz";
+        echo "[$$(date -Iseconds)] Starting data backup to $$DATA_FILE";
+        # Written to .partial and renamed only after the archive has been read
+        # back. The exit code alone cannot decide this: GNU tar reserves 1 for
+        # a file that changed mid-read and 2 for a real failure, but this is
+        # BusyBox tar, which returns 1 for both - including the is-a-directory
+        # case, where nothing was written at all. Reading it back is true on
+        # either tar and promises more than the code ever did.
+        tar -zcpf "$$DATA_FILE.partial" $$DATA_PATH; RC=$$?;
+        if { [ "$$RC" -eq 0 ] || [ "$$RC" -eq 1 ]; } && tar -tzf "$$DATA_FILE.partial" > /dev/null 2>&1; then
+          mv "$$DATA_FILE.partial" "$$DATA_FILE";
+          echo "[$$(date -Iseconds)] Data backup OK: $$DATA_FILE ($$(stat -c %s "$$DATA_FILE") bytes)$$([ "$$RC" -eq 1 ] && echo " - some files changed while being read")";
+        else
+          echo "[$$(date -Iseconds)] Data backup FAILED - partial file kept as $$DATA_FILE.failed for diagnosis" >&2;
+          mv "$$DATA_FILE.partial" "$$DATA_FILE.failed" 2>/dev/null || true;
+        fi;
+        if [ "$${DATA_BACKUP_PRUNE_DAYS:-0}" -ge 1 ]; then
+          find "$$DATA_BACKUPS_PATH" -type f -name "$$DATA_BACKUP_NAME-*" -mtime "+$$DATA_BACKUP_PRUNE_DAYS" -delete;
+        fi;
+        sleep "$$BACKUP_INTERVAL";
+      done'
+    volumes:
+      - forgejo-data:${DATA_PATH:-/data}
+      - forgejo-data-backups:${DATA_BACKUPS_PATH:-/srv/forgejo-data/backups}
+    environment:
+      BACKUP_INIT_SLEEP: ${BACKUP_INIT_SLEEP:-30m}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-24h}
+      DATA_BACKUP_PRUNE_DAYS: ${DATA_BACKUP_PRUNE_DAYS:-7}
+      DATA_BACKUPS_PATH: ${DATA_BACKUPS_PATH:-/srv/forgejo-data/backups}
+      DATA_PATH: ${DATA_PATH:-/data}
+      DATA_BACKUP_NAME: ${DATA_BACKUP_NAME:-forgejo-data-backup}
+    networks:
+      - forgejo-network
+    restart: unless-stopped

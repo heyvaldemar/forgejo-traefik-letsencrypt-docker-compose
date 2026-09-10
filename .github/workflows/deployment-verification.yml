@@ -1,0 +1,492 @@
+name: Deployment Verification
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Daily rebuild: security patches should not wait for a weekly slot.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: deployment-verification-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Authenticated requests avoid the anonymous API rate limit that shared
+  # GitHub runners regularly hit (api.github.com answers 403 otherwise).
+  GH_API_TOKEN: ${{ github.token }}
+
+jobs:
+  lint:
+    name: Lint shell scripts and workflow YAML
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: ShellCheck
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt \
+            koalaman/shellcheck-alpine:stable \
+            shellcheck ./*.sh
+
+      - name: actionlint (GitHub Actions workflow linting)
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt \
+            rhysd/actionlint:1.7.12 \
+            -color
+
+  scan-trivy:
+    name: Scan pinned upstream image with Trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Findings surface in the Security tab for triage; they don't block CI.
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      # Image refs are read from the compose file's x-images defaults at
+      # runtime — single source of truth.
+      fail-fast: false
+      matrix:
+        include:
+          - name: forgejo
+            env_var: FORGEJO_IMAGE_TAG
+          - name: backups
+            env_var: FORGEJO_BACKUPS_IMAGE_TAG
+          - name: traefik
+            env_var: TRAEFIK_IMAGE_TAG
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned ${{ matrix.name }} image from the compose file
+        id: pin
+        env:
+          ENV_VAR: ${{ matrix.env_var }}
+        run: |
+          image="$(grep -m1 -oE "\\$\\{${ENV_VAR}:-.*" forgejo-traefik-letsencrypt-docker-compose.yml | sed -E -e ':a' -e 's/\$\{[A-Z0-9_]+:-([^{}]*)\}/\1/' -e 'ta')"
+          if [ -z "$image" ]; then
+            echo "${ENV_VAR} default not found in the compose x-images block" >&2
+            exit 1
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy scan of ${{ matrix.name }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.pin.outputs.image }}
+          format: sarif
+          output: trivy-${{ matrix.name }}.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF (${{ matrix.name }}) to GitHub Security
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          sarif_file: trivy-${{ matrix.name }}.sarif
+          category: trivy-${{ matrix.name }}
+
+  check-pin-freshness:
+    name: Check pinned images for upstream drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Scheduled + manual dispatch only: a new upstream release is not
+    # actionable inside an unrelated PR. On the cron the failure lands as a
+    # workflow-failure notification to the maintainer — a stale pin must
+    # not sit unnoticed. Dependabot cannot see these pins (they are compose
+    # interpolation defaults, not Dockerfile literals), so this job is the
+    # actual tracking mechanism.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare pinned digests against what each tag resolves to now
+        run: |
+          status=0
+          for var in FORGEJO_IMAGE_TAG FORGEJO_BACKUPS_IMAGE_TAG TRAEFIK_IMAGE_TAG; do
+            pin="$(grep -m1 -oE "\\$\\{${var}:-.*" forgejo-traefik-letsencrypt-docker-compose.yml | sed -E -e ':a' -e 's/\$\{[A-Z0-9_]+:-([^{}]*)\}/\1/' -e 'ta')"
+            ref="${pin%%@*}"
+            pinned_digest="${pin##*@}"
+            # Three attempts: an unanswered registry lookup used to leave this empty,
+            # and the comparison below then reported it as drift.
+            current_digest=""
+            for attempt in 1 2 3; do
+              current_digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' 2>/dev/null | jq -r '.digest // empty')"
+              [ -n "$current_digest" ] && break
+              sleep $(( attempt * 5 ))
+            done
+            if [ -z "$current_digest" ]; then
+              echo "::error::${ref} did not resolve after three attempts: the registry did not answer, or the tag is gone. The pin itself is unchanged."
+              status=1
+              continue
+            fi
+            if [ "$pinned_digest" != "$current_digest" ]; then
+              echo "::error::${var} digest drift: pinned ${pinned_digest}, but ${ref} now resolves to ${current_digest}"
+              status=1
+            else
+              echo "${var} OK (${ref})"
+            fi
+          done
+          exit "$status"
+
+      - name: Compare the pinned Forgejo version against the latest release
+        # Runs even when the digest comparison above failed, so one run
+        # reports every problem it can see instead of one per day.
+        #
+        # Forgejo is developed on Codeberg and has no GitHub mirror to ask —
+        # api.github.com/repos/forgejo/forgejo answers 404. Its own API is the
+        # source of truth, and it is a Forgejo instance itself, so the release
+        # shape is the same one this template serves.
+        #
+        # Note the two spellings: the git tags carry a leading v (v16.0.4)
+        # while the container tags do not (16.0.4). The comparison strips it.
+        if: always()
+        run: |
+          pin="$(grep -m1 -oE '\$\{FORGEJO_IMAGE_TAG:-.*' forgejo-traefik-letsencrypt-docker-compose.yml | sed -E -e ':a' -e 's/\$\{[A-Z0-9_]+:-([^{}]*)\}/\1/' -e 'ta')"
+          ref="${pin%%@*}"; pinned="${ref##*:}"
+          latest="$(curl -fsSL --retry 3 https://codeberg.org/api/v1/repos/forgejo/forgejo/releases/latest | jq -r .tag_name)"
+          latest="${latest#v}"
+          if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+            echo "::error::Could not determine the latest Forgejo release from the Codeberg API"
+            exit 1
+          fi
+          if [ "$pinned" != "$latest" ]; then
+            echo "::error::Forgejo pin is behind: pinned ${pinned}, latest release is ${latest}"
+            exit 1
+          fi
+          echo "Forgejo pin ${pinned} matches the latest release"
+
+      - name: Compare pinned Traefik minor against the latest release
+        # Runs even when the digest comparison above failed, so one run
+        # reports every problem it can see instead of one per day.
+        if: always()
+        run: |
+          pin="$(grep -m1 -oE '\$\{TRAEFIK_IMAGE_TAG:-.*' forgejo-traefik-letsencrypt-docker-compose.yml | sed -E -e ':a' -e 's/\$\{[A-Z0-9_]+:-([^{}]*)\}/\1/' -e 'ta')"
+          ref="${pin%%@*}"
+          pinned_minor="${ref##*:}"
+          latest="$(curl -fsSL --retry 3 -H "Authorization: Bearer $GH_API_TOKEN" https://api.github.com/repos/traefik/traefik/releases/latest | jq -r .tag_name)"
+          latest="${latest#v}"
+          if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+            echo "::error::Could not determine the latest Traefik release from the GitHub API"
+            exit 1
+          fi
+          case "$latest" in
+            "$pinned_minor".*) echo "Traefik pin ${pinned_minor} matches the latest release line (${latest})" ;;
+            *) echo "::error::Traefik pin is behind: pinned minor ${pinned_minor}, latest release is ${latest}"; exit 1 ;;
+          esac
+
+  deploy-and-test:
+    name: docker compose up + a real git push through Traefik + backup validity
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 35
+    permissions:
+      contents: read
+
+    env:
+      NETWORK_ONE: forgejo-network
+      NETWORK_TWO: traefik-network
+      DOCKER_COMPOSE_FILE: forgejo-traefik-letsencrypt-docker-compose.yml
+      APP_HOSTNAME: forgejo.heyvaldemardm.net
+      APP_TRAEFIK_HOSTNAME: traefik.forgejo.heyvaldemardm.net
+      COMPOSE_PROJECT_NAME: forgejo
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create necessary Docker networks
+        run: |
+          docker network create "$NETWORK_ONE" || true
+          docker network create "$NETWORK_TWO" || true
+
+      - name: Generate test .env with ephemeral credentials
+        # The real .env is gitignored. CI generates throwaway credentials so
+        # `docker compose up` succeeds without committing secrets to the
+        # repo. No *_IMAGE_TAG values on purpose: the compose file's
+        # x-images defaults apply, so CI always tests exactly the pins the
+        # template ships to users who run it unmodified.
+        run: |
+          cat > .env <<EOF
+          TRAEFIK_ACME_EMAIL=ci@example.com
+          TRAEFIK_HOSTNAME=${APP_TRAEFIK_HOSTNAME}
+          TRAEFIK_BASIC_AUTH=traefikadmin:\$\$2y\$\$10\$\$sMzJfirKC75x/hVpiINeZOiSm.Jkity9cn4KwNkRvO7hSQVFc5FLO
+          FORGEJO_HOSTNAME=${APP_HOSTNAME}
+          BACKUP_INIT_SLEEP=15s
+          BACKUP_INTERVAL=60s
+          EOF
+          echo "Generated ephemeral .env for CI run"
+
+      - name: Upgrade drill — the previous release comes up first, on the volumes this run will upgrade
+        # A fresh stack proves the new image starts. It proves nothing about the
+        # data a deployed host already has: whether the new database image accepts
+        # the old data directory, whether the application's migrations run on a
+        # populated schema. So the previous release is started first, on this
+        # project's volumes, and the ordinary `up -d` below then recreates the
+        # changed containers on top of it - which is exactly what `git pull &&
+        # docker compose up -d` does on a deployed host. Every smoke check that
+        # follows judges the upgraded stack, not a fresh one.
+        run: |
+          prev="$(git ls-remote --tags --sort=-v:refname origin 'v*' | grep -v '\^{}' | head -1 | sed 's|.*refs/tags/||')"
+          if [ -z "$prev" ]; then
+            echo "no previous release: nothing to upgrade from, the fresh start below is the whole test"
+            exit 0
+          fi
+          git fetch --depth=1 --quiet origin "refs/tags/$prev:refs/tags/$prev"
+          if git diff --quiet "$prev" -- "$DOCKER_COMPOSE_FILE"; then
+            echo "the compose file is unchanged since $prev: nothing to drill"
+            exit 0
+          fi
+          git show "$prev:$DOCKER_COMPOSE_FILE" > .upgrade-drill-previous.yml
+          echo "starting $prev on this project's volumes"
+          docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" up -d
+          # Healthy means: every container is running and healthy (or running
+          # with no health check), or exited 0 (a one-shot init container).
+          bad=""
+          for _ in $(seq 1 60); do
+            bad="$(docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" ps -a --format json \
+              | jq -rs '[.[] | select((.State == "running" and (.Health == "" or .Health == "healthy")) or (.State == "exited" and .ExitCode == 0) | not)] | map("\(.Service):\(.State)/\(.Health)") | join(" ")')"
+            [ -z "$bad" ] && break
+            sleep 10
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::the previous release ($prev) did not come up with this run's .env: $bad. Either the variable contract changed - then the changelog must say so - or $prev was never green here."
+            docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" logs --tail 80
+            exit 1
+          fi
+          echo "$prev is up and healthy; stopping it and keeping its volumes"
+          docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" down
+          rm -f .upgrade-drill-previous.yml
+          echo "the start below is now an upgrade from $prev"
+
+      - name: Start up services using Docker Compose
+        run: docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" up -d
+
+      - name: Modify /etc/hosts for internal routing
+        run: |
+          echo "127.0.0.1 $APP_HOSTNAME" | sudo tee -a /etc/hosts
+          echo "127.0.0.1 $APP_TRAEFIK_HOSTNAME" | sudo tee -a /etc/hosts
+
+      - name: Print Docker Compose services status
+        run: docker ps
+
+      - name: Wait for Forgejo through Traefik
+        # /api/healthz reports each component separately rather than merely
+        # answering with a status code: a "pass" here means the SQLite file was
+        # actually opened, not that a port is listening. It is also the one
+        # endpoint that answers before any user exists and keeps answering with
+        # REQUIRE_SIGNIN_VIEW on, which is how this template ships.
+        run: |
+          # jq rather than a grep, because the document carries one overall
+          # status and one per component: matching "pass" anywhere in it goes
+          # green on a body whose top line says "fail". Both are asserted by
+          # name here, and the database one is the one that matters.
+          # shellcheck disable=SC2016
+          timeout 8m bash -c 'while ! curl -sk "https://$APP_HOSTNAME/api/healthz" \
+            | jq -e ".status == \"pass\" and (.checks[\"database:ping\"][0].status == \"pass\")" > /dev/null 2>&1; do
+            echo "Waiting for Forgejo..."
+            sleep 10
+          done'
+          curl -sk "https://$APP_HOSTNAME/api/healthz" -w "\n"
+          # REQUIRE_SIGNIN_VIEW is on, and this is what that has to mean:
+          # nothing about the repositories is visible to someone who has not
+          # signed in. Not asserted on `/`, which answers 200 either way
+          # because it renders the sign-in page itself — a check there would
+          # be green on an instance that had thrown the setting away. The
+          # repository listing and the repository search API are where the
+          # setting either applies or does not.
+          browse=$(curl -sk -o /dev/null -w "%{http_code}" "https://$APP_HOSTNAME/explore/repos")
+          api=$(curl -sk -o /dev/null -w "%{http_code}" "https://$APP_HOSTNAME/api/v1/repos/search")
+          echo "anonymous: /explore/repos -> $browse, /api/v1/repos/search -> $api"
+          case "$browse" in
+            30[123578]) ;;
+            *) echo "::error::/explore/repos answered $browse to an anonymous request; REQUIRE_SIGNIN_VIEW is not in effect"; exit 1 ;;
+          esac
+          [ "$api" = "403" ] || { echo "::error::the repository search API answered $api to an anonymous request, not 403"; exit 1; }
+          echo "an anonymous visitor is shown neither the repository list nor the search API"
+
+          # And the sign-in page itself is served, rather than an error that
+          # merely happens not to leak anything.
+          curl -sk "https://$APP_HOSTNAME/user/login" | grep -qi "sign in" \
+            || { echo "::error::the login page did not render"; exit 1; }
+          echo "the login page renders"
+
+      - name: The web installer is locked
+        # INSTALL_LOCK is the difference between a private instance and one
+        # that the first person to find the hostname gets to configure. With
+        # it set, /install redirects away instead of serving the form. A
+        # regression here is silent and total, so it is asserted rather than
+        # assumed.
+        run: |
+          code=$(curl -sk -o /dev/null -w "%{http_code}" "https://$APP_HOSTNAME/install")
+          echo "/install answered $code"
+          case "$code" in
+            302|303|404) echo "the installer is not reachable, as configured" ;;
+            *) echo "::error::/install answered $code — the web installer is open"; exit 1 ;;
+          esac
+
+      - name: Create an admin from the CLI and push a repository over HTTPS
+        # The one test a git host actually has to pass. Everything above proves
+        # the process is alive; this proves the product works: an account is
+        # created, the API accepts it, a repository is made, and a real `git
+        # push` over HTTPS through Traefik lands a commit the API can then read
+        # back at the right branch.
+        #
+        # It is also the buffering assertion. Traefik buffers request and
+        # response bodies by default, and a git push is one request body; the
+        # compose file turns that off, and if it is ever turned back on this
+        # step is what notices.
+        env:
+          FORGEJO_TEST_USER: citest
+          FORGEJO_TEST_PASSWORD: ci-test-password-not-a-secret
+        run: |
+          set -euo pipefail
+          dc() { docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" "$@"; }
+
+          dc exec -T -u git forgejo forgejo admin user create \
+            --admin --username "$FORGEJO_TEST_USER" \
+            --email "$FORGEJO_TEST_USER@example.com" \
+            --password "$FORGEJO_TEST_PASSWORD" --must-change-password=false
+          echo "admin created"
+
+          api() { curl -sk -u "$FORGEJO_TEST_USER:$FORGEJO_TEST_PASSWORD" "$@"; }
+
+          # The API must accept that account. With REQUIRE_SIGNIN_VIEW on, an
+          # anonymous call here would 403, so a version coming back is proof of
+          # authentication and not merely of reachability.
+          version=$(api "https://$APP_HOSTNAME/api/v1/version" | jq -r .version)
+          [ -n "$version" ] && [ "$version" != "null" ] || { echo "::error::the API did not accept the new account"; exit 1; }
+          echo "API version as an authenticated user: $version"
+
+          api -X POST -H "Content-Type: application/json" \
+            -d '{"name":"ci-smoke","private":true,"auto_init":false}' \
+            "https://$APP_HOSTNAME/api/v1/user/repos" > /dev/null
+          echo "repository created"
+
+          # Traefik is holding a self-signed certificate for this hostname on
+          # the runner, so git is told not to verify it. Nothing else about
+          # this push is special-cased.
+          export GIT_SSL_NO_VERIFY=1
+          work=$(mktemp -d)
+          git -C "$work" init -q -b main
+          git -C "$work" config user.email "ci@example.com"
+          git -C "$work" config user.name "CI"
+          # A file large enough that a buffering limit would have to hold it,
+          # rather than a one-line commit that any configuration passes.
+          head -c 5000000 /dev/urandom > "$work/payload.bin"
+          echo "pushed by deployment verification" > "$work/README.md"
+          git -C "$work" add -A
+          git -C "$work" commit -q -m "CI smoke commit"
+          expected=$(git -C "$work" rev-parse HEAD)
+          git -C "$work" remote add origin \
+            "https://$FORGEJO_TEST_USER:$FORGEJO_TEST_PASSWORD@$APP_HOSTNAME/$FORGEJO_TEST_USER/ci-smoke.git"
+          git -C "$work" push -q origin main
+          echo "pushed $expected (with a 5 MB blob)"
+
+          # git returns as soon as the receive-pack finished; Forgejo writes
+          # the branch into its database a moment later. Asking immediately
+          # gets a null back from a push that was entirely successful, so this
+          # gives it a few seconds rather than calling that a failure.
+          got=""
+          for _ in $(seq 1 20); do
+            got=$(api "https://$APP_HOSTNAME/api/v1/repos/$FORGEJO_TEST_USER/ci-smoke/branches/main" | jq -r '.commit.id // empty')
+            [ -n "$got" ] && break
+            sleep 3
+          done
+          [ "$got" = "$expected" ] || { echo "::error::the pushed commit is not on main: expected $expected, got ${got:-nothing}"; exit 1; }
+          echo "the commit is on main as reported by the API: $got"
+
+          # And it comes back out. A push that the server accepted and cannot
+          # serve again is the failure mode that only shows up on the day
+          # somebody needs the code.
+          clone=$(mktemp -d)
+          git clone -q "https://$FORGEJO_TEST_USER:$FORGEJO_TEST_PASSWORD@$APP_HOSTNAME/$FORGEJO_TEST_USER/ci-smoke.git" "$clone/x"
+          [ "$(git -C "$clone/x" rev-parse HEAD)" = "$expected" ] || { echo "::error::the clone came back at a different commit"; exit 1; }
+          [ "$(stat -c %s "$clone/x/payload.bin")" = "5000000" ] || { echo "::error::the 5 MB blob did not survive the round trip"; exit 1; }
+          echo "clone over HTTPS returns the same commit and the whole blob"
+          rm -rf "$work" "$clone"
+
+      - name: Verify a backup is produced and valid
+        # Log-driven: the file named in a 'backup OK' line has already been
+        # read back by the loop itself, so this never races a cycle that is
+        # still writing.
+        run: |
+          # shellcheck disable=SC2016
+          timeout 6m bash -c 'until docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep -q "Data backup OK"; do echo "Waiting for the first backup cycle..."; sleep 10; done'
+          data=$(docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep "Data backup OK" | tail -1 | sed -E 's/.*Data backup OK: ([^ ]+) .*/\1/')
+          [ -n "$data" ] || { echo "::error::no 'Data backup OK' line - the archive failed"; exit 1; }
+          echo "Data backup file: $data"
+          docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T backups sh -c "tar -tzf '$data' > /dev/null && tar -tzf '$data' | grep -q '^config/'" \
+            && echo "Data backup valid and carries the data directory: $data"
+          docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep -i "backup FAILED" && { echo "::error::the backups log reports a failure"; exit 1; } || true
+
+      - name: Run the backup/restore end-to-end tests
+        # Eight scenarios against the live stack: required-env guard, backup
+        # produced, readable, valid content, library archive readable, failure
+        # detected when the database is down, restore genuinely replaces state,
+        # prune keeps recent files. Same script a maintainer runs locally.
+        run: |
+          chmod +x tests/e2e-backup-restore.sh
+          ./tests/e2e-backup-restore.sh
+
+      - name: Forgejo answers on the restored data directory, with the repository still in it
+        # The end-to-end test above empties the data directory and unpacks an
+        # archive over it while the container is stopped. A restore that leaves
+        # the SQLite file in a state the application rejects passes every check
+        # up to here and fails the first time somebody actually needs it.
+        #
+        # Answering is not enough for a git host, though. Forgejo starts
+        # perfectly well with an empty database — that is what a fresh install
+        # is. So this asks for the repository that was pushed before the
+        # restore, at the commit it was pushed at: proof that what came back is
+        # the instance rather than a clean one.
+        env:
+          FORGEJO_TEST_USER: citest
+          FORGEJO_TEST_PASSWORD: ci-test-password-not-a-secret
+        run: |
+          docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" restart forgejo
+          # shellcheck disable=SC2016
+          timeout 6m bash -c 'while ! curl -sk "https://$APP_HOSTNAME/api/healthz" \
+            | jq -e ".status == \"pass\" and (.checks[\"database:ping\"][0].status == \"pass\")" > /dev/null 2>&1; do
+            echo "Waiting for Forgejo on the restored data..."
+            sleep 10
+          done'
+          echo "Forgejo came back on the restored data directory"
+          branch=$(curl -sk -u "$FORGEJO_TEST_USER:$FORGEJO_TEST_PASSWORD" \
+            "https://$APP_HOSTNAME/api/v1/repos/$FORGEJO_TEST_USER/ci-smoke/branches/main" | jq -r .commit.id)
+          [ -n "$branch" ] && [ "$branch" != "null" ] \
+            || { echo "::error::the restored instance does not have the repository that was pushed before the backup"; exit 1; }
+          echo "the pushed repository survived the restore, at $branch"
+
+      - name: Wait for the Traefik dashboard to be ready
+        run: |
+          # shellcheck disable=SC2016
+          timeout 5m bash -c 'while ! curl -fsSLk --write-out "%{http_code}" --output /dev/null "https://$APP_TRAEFIK_HOSTNAME" | grep -E "200|401"; do
+            echo "Waiting for the dashboard to be ready..."
+            sleep 10
+          done'
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs
+
+      - name: Shutdown Docker Compose services
+        if: always()
+        run: docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" down

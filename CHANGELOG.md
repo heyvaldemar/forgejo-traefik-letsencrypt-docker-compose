@@ -1,0 +1,96 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+_(no unreleased changes yet)_
+
+## [1.0.0] - 2026-09-10
+
+First release. A production deployment of Forgejo behind Traefik, built to the
+fleet standard established in
+[keycloak-traefik-letsencrypt-docker-compose](https://github.com/heyvaldemar/keycloak-traefik-letsencrypt-docker-compose).
+
+### Added
+
+- **Forgejo 16.0 behind Traefik with Let's Encrypt TLS.** Three images pinned
+  by `tag@sha256:<digest>` in the compose `x-images` block: the server,
+  Traefik, and a plain alpine for the backups sidecar.
+- **No web installer, and no default password.** Forgejo ships an installer and
+  most compose files leave it on, which means whoever reaches a new hostname
+  first configures the instance and becomes its administrator. On a public IP
+  that is minutes, not days: scanners watch certificate transparency logs.
+  `INSTALL_LOCK` is set, the admin is created from the CLI, and CI asserts that
+  `/install` stays closed. Registration is disabled and nothing is visible
+  without signing in, so this starts private and opens by decision.
+- **A `git push` that is not cut off by the proxy.** Traefik buffers request
+  and response bodies by default, which puts a ceiling on repository size that
+  nobody discovers until the first large push fails halfway. Both directions
+  are unbuffered for this router, and the responding timeouts are lifted:
+  packing a large repository server-side can take minutes before the first byte
+  comes back, and the default write timeout ends that as a broken pipe.
+- **A `git push` proven in CI, not asserted.** The deploy job creates an admin
+  from the CLI, creates a repository through the API, pushes a commit carrying
+  a 5 MB blob over HTTPS through Traefik, requires the API to report that exact
+  commit on `main`, and then clones it back and checks that the commit and the
+  whole blob came with it.
+- **SQLite, deliberately**, against the fleet's own PostgreSQL pattern. It is
+  officially supported and it is what upstream tests; choosing it removes a
+  container, a second image pin, and a database version that would have to stay
+  in lockstep with whatever takes the dumps. The cost is stated rather than
+  hidden: SQLite is one writer at a time, and the README says where the line
+  is and how to cross it.
+- **Git over SSH as an opt-in override file.** The base stack serves git over
+  HTTPS, which needs no second published port and survives a proxy that
+  terminates TLS. `git-over-ssh.override.yml` turns the built-in server on for
+  people who want public keys, published on 2222 rather than 22 — port 22
+  belongs to the host's own sshd — and spells out the difference between
+  `SSH_LISTEN_PORT` and `SSH_PORT`, which is the setting people get wrong.
+- **A backup loop that reads its own archive back before naming it a backup.**
+  Each cycle writes `.partial`, verifies it with `tar -tzf`, and only then
+  renames. BusyBox tar returns exit code 1 both for "a file changed while I
+  read it" and for "I could not write the output at all", so the exit code
+  alone would rename an empty file into place and log it as OK.
+- **A restore script that stops the server first**, because SQLite is written
+  on every push and every page view.
+- **Deployment Verification workflow.** shellcheck and actionlint, Trivy scans
+  of all three images, a daily freshness check against Codeberg, and the deploy
+  job described above followed by eight backup and restore scenarios.
+- **`update.sh`**, container hardening on every service, resource limits and
+  reservations on all three, and a sixty-second `stop_grace_period`: SQLite
+  tolerates a hard kill far worse than it looks, and a push interrupted
+  mid-transaction can leave a repository the database references and the disk
+  does not have.
+
+### Notes
+
+- **The database file must live under `/data/gitea`, and that is not
+  cosmetic.** The image starts as root, creates `/data/git` and `/data/gitea`,
+  chowns those two to the uid Forgejo then runs as, and leaves `/data` itself
+  owned by root. A database path anywhere else under `/data` cannot be created
+  by the process that needs it: the container comes up, retries ten times with
+  `mkdir /data/…: permission denied`, and never turns healthy. It works on a
+  bind mount whose whole tree was chowned by hand, which is exactly why it is
+  written down — a setting that is fine on the maintainer's host and broken on
+  a named volume is the kind that ships. Found by this template's own first
+  boot.
+- **The health probe isolates the first `status` before matching it.**
+  `/api/healthz` reports one overall verdict and then one per component;
+  matching `"pass"` anywhere in that document goes green on a body whose top
+  line reads `fail` and whose cache happens to be fine. CI asserts the overall
+  status and `database:ping` by name.
+- **The post-restore check asks for a repository, not for a status code.**
+  Forgejo starts perfectly well on an empty database — that is what a fresh
+  install is — so a check that only asks whether it answers would pass a
+  restore that lost everything.
+- **The commit is not in the database the instant `git push` returns.** The
+  branch is written a moment later, and asking immediately gets a null back
+  from a push that entirely succeeded. CI waits rather than calling that a
+  failure.
+
+[Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/releases/tag/v1.0.0

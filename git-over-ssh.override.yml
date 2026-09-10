@@ -1,0 +1,54 @@
+# Git over SSH — opt in, because it publishes a second SSH surface on the host.
+#
+# The base compose file serves git over HTTPS through Traefik. That reuses the
+# certificate that is already there, needs no extra published port, and is the
+# only transport that works unchanged behind Cloudflare Access, a corporate
+# proxy, or anything else that terminates TLS. It is the right default.
+#
+# What it does not do is public-key authentication. Over HTTPS, git sends a
+# token on every push, and a token in a credential helper is a password on
+# disk. If you want keys, this file turns Forgejo's built-in SSH server on.
+#
+# Use it by naming both files:
+#
+#   docker compose \
+#     -f forgejo-traefik-letsencrypt-docker-compose.yml \
+#     -f git-over-ssh.override.yml \
+#     -p forgejo up -d
+#
+# WHY 2222 AND NOT 22
+#   Port 22 on the host almost certainly belongs to the real sshd, and taking
+#   it away from a machine you administer over SSH is a way to lose the machine.
+#   So the container's SSH server is published on 2222 by default. Change
+#   FORGEJO_SSH_PORT if that clashes with something.
+#
+#   The two settings are not the same port and are not interchangeable:
+#     SSH_LISTEN_PORT  what the server inside the container binds. Stays 22.
+#     SSH_PORT         what Forgejo writes into the clone URLs it shows you.
+#                      This must be the port on the HOST, or every clone
+#                      command the web UI offers is wrong.
+#
+# AFTER THE FIRST START
+#   Add your public key in the web UI under Settings -> SSH / GPG Keys, then:
+#
+#     ssh -T -p 2222 git@your.forgejo.hostname
+#
+#   A greeting naming your account means it works. "Permission denied" with no
+#   greeting means the key was not added; a connection refused means the port
+#   is not published, or the host firewall is not letting it through.
+#
+# FIREWALL
+#   Opening 2222 to the internet exposes an SSH server to the internet. It only
+#   ever offers the git shell and only accepts keys, so it is a narrow surface —
+#   but it is a surface. On a machine reachable from outside, restrict the port
+#   to the networks that need it rather than leaving it open by habit.
+services:
+  forgejo:
+    environment:
+      FORGEJO__server__DISABLE_SSH: "false"
+      FORGEJO__server__START_SSH_SERVER: "true"
+      FORGEJO__server__SSH_LISTEN_PORT: "22"
+      FORGEJO__server__SSH_PORT: "${FORGEJO_SSH_PORT:-2222}"
+      FORGEJO__server__SSH_DOMAIN: "${FORGEJO_HOSTNAME:?set in .env - see .env.example}"
+    ports:
+      - "${FORGEJO_SSH_PORT:-2222}:22"
