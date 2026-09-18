@@ -6,9 +6,9 @@
 # CI (Trivy scans, check-pin-freshness, the ephemeral test .env) reads
 # the pins from these lines — this block is the single source of truth.
 x-images:
-  traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:f86a2cab1b5c649070c49f883c743dd32d8485a56e3368c5f93b9e91f1e91259}}
-  forgejo: &forgejo-image ${FORGEJO_IMAGE_TAG:-codeberg.org/forgejo/forgejo:${FORGEJO_IMAGE_VERSION:-16.0.4@sha256:a3e33d03e771d3e58b27de5573c3a25dc4f670583a6724c1878a6d0bbecf3556}}
-  backups: &backups-image ${FORGEJO_BACKUPS_IMAGE_TAG:-alpine:${FORGEJO_BACKUPS_IMAGE_VERSION:-3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce}}
+  traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:1c32e7c368204fd72812152ebdd2ac0425993df6fd982317deb02e48f2d5423c}}
+  forgejo: &forgejo-image ${FORGEJO_IMAGE_TAG:-codeberg.org/forgejo/forgejo:${FORGEJO_IMAGE_VERSION:-16.0.5@sha256:cf5f5ae6acf2ababca0ee3d255705b83a47f35b25e07fc931d694d60664053fe}}
+  backups: &backups-image ${FORGEJO_BACKUPS_IMAGE_TAG:-alpine:${FORGEJO_BACKUPS_IMAGE_VERSION:-3.22@sha256:365499d9dccb7c8cfaffef995a6c382e71174585e0556f6476ead1c5971c39fb}}
 
 networks:
   forgejo-network:
