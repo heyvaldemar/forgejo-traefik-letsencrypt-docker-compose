@@ -132,6 +132,8 @@ chmod +x ./*.sh
 ./forgejo-restore-data.sh
 ```
 
+It lists the backups and asks, or takes a file name as its argument; it reads every path from the running backups container, and CI runs it on every push.
+
 It stops Forgejo first: SQLite is written on every push and every page view, and replacing the file under a running process is how a database ends up half old and half new. Afterwards, check **Site Administration → Repositories**, which reports any repository the database knows about and the disk does not.
 
 ## Resource limits
