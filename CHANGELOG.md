@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Security
+
+- **The HTTPS entry point's read timeout is no longer zero.** `FORGEJO_GIT_TIMEOUT` and
+  the fleet-wide `TRAEFIK_READ_TIMEOUT` defaulted to `0s`, which tells
+  Traefik to wait for a request body for ever. A request that carries a
+  `Content-Length` and sends no body then holds its connection until the
+  connections run out, the shape of CVE-2024-28869, which Traefik closed in
+  2.11.2 by giving that timeout a default. The comment justified the zero
+  with the length of the responses this stack serves; a long response is
+  the write timeout's business, and that stays `0s`. The default is now
+  `3600s`. A large git push is one long request, so this allows an hour for it.
 
 ## [1.1.0] - 2026-09-26
 
