@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Forgejo 16.0.5 → 16.0.6, a security release** ([release notes](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/release-notes-published/16.0.6.md)). The one that matters most here: a fork's pull request could trigger Forgejo Actions workflows that listen to `pull_request_review` or `pull_request_review_comment` without the approval step, and with the repository's secrets. Also fixed: label metadata from another repository readable through the label API, and label deletion across an organization and a repository that share an id. The deploy job booted the stack on the new image before this landed.
+
 ### Added
 
 - **CI fails on an anonymous volume.** A `VOLUME` an image declares and no mount covers becomes an anonymous volume: never backed up, and replaced by an empty one on `down`/`up`. The deployment verification now inspects every container it starts and fails on one, unless `.github/anonymous-volumes` lists it with the reason. GLPI's data lived in exactly such a volume from 2026-08-31 to 2026-10-11.
