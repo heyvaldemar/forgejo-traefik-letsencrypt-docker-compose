@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.1.4] - 2026-10-12
+
 ### Security
 
 - **Forgejo 16.0.5 → 16.0.6, a security release** ([release notes](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/release-notes-published/16.0.6.md)). The one that matters most here: a fork's pull request could trigger Forgejo Actions workflows that listen to `pull_request_review` or `pull_request_review_comment` without the approval step, and with the repository's secrets. Also fixed: label metadata from another repository readable through the label API, and label deletion across an organization and a repository that share an id. The deploy job booted the stack on the new image before this landed.
@@ -201,7 +205,8 @@ fleet standard established in
   release here; it did reach one in the Jellyfin template the same day, fixed
   there in v1.0.1.
 
-[Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.0...v1.1.1
