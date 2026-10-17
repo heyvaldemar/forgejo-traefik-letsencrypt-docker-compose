@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Changed
+
+- **`codeberg.org/forgejo/forgejo:16.0.6` moved to `codeberg.org/forgejo/forgejo:17.0.0`.** The freshness check reported the lag; the deploy job booted the stack on the new image before this landed.
 
 ## [1.1.5] - 2026-10-16
 
