@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.2.0] - 2026-10-18
+
 ### Changed
 
 - **`codeberg.org/forgejo/forgejo:16.0.6` moved to `codeberg.org/forgejo/forgejo:17.0.0`.** The freshness check reported the lag; the deploy job booted the stack on the new image before this landed.
+
+### Upgrading
+
+Forgejo 17 is a major release. Its [upgrade guide](https://forgejo.org/docs/v17.0/admin/upgrade/) lists no required manual action; the one version-specific step is optional, deleting the migrated pull-request patch files Forgejo no longer uses. Take a backup before upgrading, as for any major release.
+
+Before it landed, the deploy job booted the stack on 17.0.0 and pushed a real commit through Traefik, and the clean-machine drill restored 1.1.5's backups onto it and read its marker back.
 
 ## [1.1.5] - 2026-10-16
 
@@ -213,7 +223,8 @@ fleet standard established in
   release here; it did reach one in the Jellyfin template the same day, fixed
   there in v1.0.1.
 
-[Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.5...HEAD
+[Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.5...v1.2.0
 [1.1.5]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.1.2...v1.1.3
