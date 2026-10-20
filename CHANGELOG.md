@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Fixed
+
+- The README still called 16.0 the latest stable Forgejo, and the example in `.env.example` still named 16.0.6, after 1.2.0 moved the pin to 17.0.0. The fleet's conformance check refused the template for it from 2026-10-18.
 
 ## [1.2.0] - 2026-10-18
 

@@ -99,7 +99,7 @@ If you run with the SSH override, add it to your own `up` command after the upda
 
 Three images pinned to `tag@sha256:<digest>` as interpolation defaults in the compose `x-images` block:
 
-- [`codeberg.org/forgejo/forgejo`](https://codeberg.org/forgejo/-/packages/container/forgejo/versions): the server, latest stable (16.0)
+- [`codeberg.org/forgejo/forgejo`](https://codeberg.org/forgejo/-/packages/container/forgejo/versions): the server, latest stable (17.0)
 - [`traefik`](https://hub.docker.com/_/traefik): reverse proxy
 - [`alpine`](https://hub.docker.com/_/alpine): the backups sidecar, which needs tar and nothing else
 
