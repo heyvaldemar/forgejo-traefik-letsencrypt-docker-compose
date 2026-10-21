@@ -8,7 +8,7 @@
 x-images:
   traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:6d3e069ee484ab1da5adfdda555a75eb9b1545ef09096a0cc7c3043101986a20}}
   forgejo: &forgejo-image ${FORGEJO_IMAGE_TAG:-codeberg.org/forgejo/forgejo:${FORGEJO_IMAGE_VERSION:-17.0.0@sha256:06d38310de496a10186d952bdad5ca764c153c8023ede8dfa0944c79a1dc5412}}
-  backups: &backups-image ${FORGEJO_BACKUPS_IMAGE_TAG:-alpine:${FORGEJO_BACKUPS_IMAGE_VERSION:-3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8}}
+  backups: &backups-image ${FORGEJO_BACKUPS_IMAGE_TAG:-alpine:${FORGEJO_BACKUPS_IMAGE_VERSION:-3.22@sha256:822614ea121e1d40a33655081af10ef85f0aa2ab9e61f649ceaf0c651822433c}}
 
 networks:
   forgejo-network:
