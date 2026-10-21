@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`traefik:3.7` was rebuilt upstream**; the pin moved from `sha256:0f6150202bc1…` to `sha256:6d3e069ee484…`. Same version, same tag, a rebuilt base image — the usual shape of a security fix in a base layer.
+
 ### Fixed
 
 - The README still called 16.0 the latest stable Forgejo, and the example in `.env.example` still named 16.0.6, after 1.2.0 moved the pin to 17.0.0. The fleet's conformance check refused the template for it from 2026-10-18.
