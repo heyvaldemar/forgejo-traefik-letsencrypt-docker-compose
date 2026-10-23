@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.2.5] - 2026-10-23
+
 ### Security
 
 - **`alpine:3.22` was rebuilt upstream**; the pin moved from `sha256:d406446bc05b…` to `sha256:2e0b81d60597…`. Same version, same tag, a rebuilt base image — the usual shape of a security fix in a base layer.
@@ -254,7 +258,8 @@ fleet standard established in
   release here; it did reach one in the Jellyfin template the same day, fixed
   there in v1.0.1.
 
-[Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.4...HEAD
+[Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.5...HEAD
+[1.2.5]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.1...v1.2.2
