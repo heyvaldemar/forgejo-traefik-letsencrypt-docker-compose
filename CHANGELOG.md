@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.2.12] - 2026-11-19
+
 ### Changed
 
 - **`codeberg.org/forgejo/forgejo:17.0.1` moved to `codeberg.org/forgejo/forgejo:17.0.2`.** The freshness check reported the lag; the deploy job booted the stack on the new image before this landed.
@@ -305,7 +309,8 @@ fleet standard established in
   release here; it did reach one in the Jellyfin template the same day, fixed
   there in v1.0.1.
 
-[Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.11...HEAD
+[Unreleased]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.12...HEAD
+[1.2.12]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.11...v1.2.12
 [1.2.11]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.10...v1.2.11
 [1.2.10]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.9...v1.2.10
 [1.2.9]: https://github.com/heyvaldemar/forgejo-traefik-letsencrypt-docker-compose/compare/v1.2.8...v1.2.9
